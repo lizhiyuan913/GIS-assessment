@@ -1,0 +1,347 @@
+---
+title: "GWR-Based Analysis of Influencing Factors on Car Ownership in Zhejiang Province, China"
+author: "Zhiyuan Li"
+date: "2021/1/11"
+output: html_document
+---
+```{r, echo=FALSE}
+knitr::opts_chunk$set(echo=TRUE, results = TRUE, message=FALSE, warning=FALSE)
+```
+
+## 1. Prepocess
+
+```{r}
+library(broom)
+library(corrplot)
+library(grid)
+library(gridExtra)
+library(htmlwidgets)
+library(leaflet)
+library(moments) 
+library(psych)
+library(plyr)
+library(rgdal)
+library(rgeos)
+library(spdep)
+library(sf)
+library(sp)
+library(spgwr)
+library(tmap)
+library(tmaptools)
+library(tidyverse)
+library(car)
+# Change the presentation of decimal numbers to 4 and avoid scientific notation
+options(prompt="R> ", digits=4, scipen=999)
+```  
+
+Download the data source we uploaded online earlier.
+
+```{r}
+download.file("https://github.com/lizhiyuan913/GIS-assessment/archive/main.zip", destfile="source.zip")
+unzip("source.zip")
+```  
+
+Then read in the data, and have an overview.
+
+```{r}
+Automobile.data <- read.csv("./GIS-assessment-main/data.csv", sep=',')
+glimpse(Automobile.data)
+```
+
+Chinese names of cities here are used for joining datas. 
+
+```{r}
+variable.name <- c("car.ownership", "population", "per.GDP", "household.price", "population.density", "urbanization", "milage.roadway", "ratio.bus", "prefectrue", "municipal.district")
+names(Automobile.data)[3:12] <- variable.name
+```  
+
+Read in the map.
+
+```{r}
+Output.Areas <- readOGR("./GIS-assessment-main", "district", use_iconv = TRUE, encoding = "UTF-8")
+```  
+
+Name the columns.
+
+```{r}
+names(Output.Areas)[1:2] <- c("市级","县级")
+```
+
+Merge the two datasets.
+
+```{r}
+OA.Automobile <- merge(Output.Areas, Automobile.data, by.x="县级", by.y="市县名称", all=FALSE)
+```
+
+```{r}
+head(OA.Automobile, 5)
+```
+
+```{r}
+any(is.na(OA.Automobile@data)) #check missing value
+```
+
+Firstly, we calculate Moran's I for every varaible to see if it is geo-related.
+
+```{r}
+nb <- poly2nb(OA.Automobile)
+lw <- nb2listw(nb, style="W", zero.policy=TRUE)
+```
+
+Some variables are very geographically related.
+
+```{r}
+for(i in names(OA.Automobile)[6:15]){
+global.moran <- moran.test(OA.Automobile[[i]],lw, na.action = na.exclude, zero.policy=TRUE)
+print(i)
+print(global.moran$estimate[1])}
+```
+
+Lets have a look at the dependent variables.
+
+```{r}
+qtm(OA.Automobile, fill=variable.name[2:8], fill.palette=c("#ffffd9",
+"#edf8b1",
+"#c7e9b4",
+"#7fcdbb",
+"#41b6c4",
+"#1d91c0",
+"#225ea8",
+"#253494",
+"#081d58"), n=9, title=variable.name[2:8]) + tm_scale_bar(position=c("left", "bottom"))
+```
+
+
+Then we have a look at the distribution of the car ownership -- the independent variable.
+
+```{r}
+boxplot(Automobile.data[3], main="boxplot of car ownership")
+qtm(OA.Automobile, fill="car.ownership", fill.palette=c("#ffffd9",
+"#edf8b1",
+"#c7e9b4",
+"#7fcdbb",
+"#41b6c4",
+"#1d91c0",
+"#225ea8",
+"#253494",
+"#081d58"), title="boxplot of car ownership") + tm_scale_bar(position=c("left", "bottom"))
+```
+
+We can see there are two strange  places.  
+After checking the data, we notice that data for Jindong district is 0 and remove it.
+
+```{r}
+Automobile.data <- Automobile.data[-42,]
+OA.Automobile <- merge(Output.Areas, Automobile.data, by.x="县级", by.y="市县名称", all=FALSE)
+```
+
+## 2. Regression
+Set up the regression pattern. Perform a linear regression first.
+
+```{r}
+formula <- paste0("car.ownership ~", paste(names(Automobile.data)[4:12], collapse=' + '))
+model <- lm(formula, data = OA.Automobile)
+glance(model)
+```
+
+We can see the R2 is 0.4 and the p value is low.  
+The residuals in my model is normally distributed from the above. So we can proceed on other validation.
+
+```{r}
+par(mfrow=c(2,2))
+plot(model)
+```
+
+## 3. Skewness Test
+Firstly, We draw see the distribution of variable.
+
+```{r}
+multi.hist(Automobile.data[4:10])
+```
+
+Then We run skewness test.
+
+```{r}
+skewness(Automobile.data[4:10])
+```
+
+We can see some variables turn out to be positively-skewed. So let's try symbox.
+```{r}
+for(i in c(4,6,7,9,10)){
+symbox(Automobile.data[[i]])}
+```
+
+We choose to do the log transformation to skewed variables.
+```{r}
+for(i in c(4,6,7,9,10)){
+Automobile.data[i] <- log10(Automobile.data[i])}
+```
+
+```{r}
+skewness(Automobile.data[4:10])
+```
+
+Now all skewness is under control.
+
+## 4. VIF Test
+
+```{r}
+par(mai=c(0,0,40,0), mex=2)
+corrplot(cor(Automobile.data[4:10]), cl.pos="b", tl.col="black", main="Correlation matrix of the independent variables", mar=c(0,0,1,0), tl.cex=0.6)
+```
+
+We calculate the VIF to test multi-correlation.
+
+```{r}
+car::vif(model)
+```
+
+All the VIFs are under 5 thus do not need to remove.
+Now try again.
+
+```{r}
+model <- lm(formula, data = OA.Automobile)
+glance(model)
+```
+
+```{r}
+par(mfrow=c(2,2))
+plot(model)
+```
+
+## 5. Model Interpretation
+Now let's see the variables' importance. We begin with the standardized coefficients of the variables.
+
+```{r}
+OA.Automobile.data.standardized <- lapply(OA.Automobile@data[, colnames(OA.Automobile@data)[6:15]], scale) 
+model <- lm(formula, data = OA.Automobile.data.standardized)
+model$coefficients
+```
+
+```{r}
+par(mai=c(1,2,1,1))
+barplot(model$coefficients, horiz=TRUE, las=1, main="Standardized coefficients of the variables")
+```
+
+We try to remove the variables one for a time and see how much the adjusted R2 drop.
+
+```{r}
+original <- summary(model)$adj.r.squared
+for (i in 1:9){
+formula.compare <- paste0("car.ownership ~", paste(names(Automobile.data)[4:12][-i], collapse=' + '))
+model.compare <- lm(formula.compare, data=OA.Automobile)
+print(names(Automobile.data)[4:12][i])
+print(original - summary(model.compare)$adj.r.squared)}
+```
+
+It turns out that Road Milage，Household and Urbanization are the 3 most important variables. This is the same as above.
+
+```{r}
+resids <- residuals(model)
+map.resids <- cbind(OA.Automobile, resids) 
+names(map.resids)[length(names(map.resids))] <- "resids"
+```
+
+Draw residuals on the map.  
+
+```{r}
+qtm(map.resids, fill = "resids", text="city.name", scale=0.6, fill.palette=c("#ffffd9",
+"#edf8b1",
+"#c7e9b4",
+"#7fcdbb",
+"#41b6c4",
+"#1d91c0",
+"#225ea8",
+"#253494",
+"#081d58"), title="residuals") + tm_scale_bar(position=c("left", "bottom"))
+```
+
+We can see the residuals are very geo-related.So we decide to try GWR on it. 
+
+## 6. Geographic Weighted Regression
+
+```{r}
+GWRbandwidth <- gwr.sel(formula, data = OA.Automobile, adapt = TRUE)
+```
+
+Train our GWR model.
+
+```{r}
+gwr.model = gwr(formula,
+                data = OA.Automobile,
+                adapt=GWRbandwidth,
+                hatmatrix=TRUE,
+                se.fit=TRUE)
+gwr.model
+```
+
+After the GWR, the R2 is now up to 0.82, which is a huge imporvement from OLS.
+
+```{r}
+results <-as.data.frame(gwr.model$SDF)
+```
+
+```{r}
+gwr.map <- cbind(OA.Automobile, as.matrix(results))
+```
+
+```{r}
+variable.number.name <- paste(variable.name,".number", sep = "")
+variable.coef.name <- paste(variable.name[-1],".coef", sep = "")
+```
+
+```{r}
+names(gwr.map)[6:15] <- variable.number.name
+names(gwr.map)[18:26] <- variable.coef.name
+```
+
+We draw the local R2 to have a better look.
+
+```{r}
+qtm(gwr.map, fill = "localR2",text="city.name", scale=0.6, fill.palette=c("#ffffd9",
+"#edf8b1",
+"#c7e9b4",
+"#7fcdbb",
+"#41b6c4",
+"#1d91c0",
+"#225ea8",
+"#253494",
+"#081d58"), title="localR2", format=) + tm_scale_bar(position=c("left", "bottom"))
+```
+
+We draw the parameters of every feature to have a better look.
+
+```{r}
+par(mfrow=c(3,4))
+qtm(gwr.map, fill = variable.coef.name, scale=0.6, fill.palette=c("#ffffd9",
+"#edf8b1",
+"#c7e9b4",
+"#7fcdbb",
+"#41b6c4",
+"#1d91c0",
+"#225ea8",
+"#253494",
+"#081d58"), title=variable.coef.name) + tm_scale_bar(position=c("left", "bottom"))
+```
+
+## 7. Online Presentation
+Draw the local R2, the 3 most impactable variables and their coefficients as different layers in one leaflet map.
+
+```{r}
+pick.variable.coef.name <- c("milage.roadway.coef", "urbanization.coef", "household.price.coef")
+pick.variable.number.name <- c( "milage.roadway.number", "household.price.number", "urbanization.number")
+```
+
+```{r}
+leaflet.tmap <- tm_shape(gwr.map) + tm_polygons(
+c(pick.variable.coef.name, "localR2", pick.variable.number.name), palette=c("#ffffd9",
+"#edf8b1",
+"#c7e9b4",
+"#7fcdbb",
+"#41b6c4",
+"#1d91c0",
+"#225ea8",
+"#253494",
+"#081d58"), n=9) + tm_facets(as.layers = TRUE)
+tmap_leaflet(leaflet.tmap)
+```
